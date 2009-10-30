@@ -1,0 +1,14 @@
+PostsByImage Change Log
+
+Current Version: 0.2
+
+0.2: 2007-11-01
+	* Compatible ONLY with Wordpress 2.3 and above
+	* Database queries changed to reflect changed database taxonomy for Wordpress 2.3
+	* Use of DS Internal HTML Forms API to genericize form production
+	* Options page moved to independent php page.
+
+0.1: 2007-02-01
+	* Pre-Release - Used exclusively on http://www.hudsonvalleypainter.com
+	* Full compliance to specifications of Wordpress 2.1.2
+	
