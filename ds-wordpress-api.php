@@ -1,4 +1,5 @@
 <?php
+// Unused: PostsByImage no longer loads this file.
 /*
 file:	ds-wordpress-api.php
 
@@ -145,13 +146,6 @@ function ds_wp_RemoveTaxonomyFromObject ( $oid, $tid ) {
 	global $wpdb;
 	$sql = 'DELETE FROM ' . $wpdb -> term_relationships . ' WHERE object_id = ' . $oid . ' AND term_taxonomy_id = ' . $tid;
 	$wpdb -> query ( $sql );
-}
-
-// Provide htmlspecialchars_decode () in PHP4
-if (!function_exists('htmlspecialchars_decode')) {
-	function htmlspecialchars_decode ($str, $quote_style = ENT_COMPAT) {
-	   return strtr($str, array_flip(get_html_translation_table(HTML_SPECIALCHARS, $quote_style)));
-	}
 }
 
 } //if ( ! defined ( 'DS_WORDPRESS_API' ) ) {
