@@ -1,6 +1,9 @@
 PostsByImage Change Log
 
-Current Version: 1.1.0
+Current Version: 1.1.1
+
+1.1.1: 2026-09-26
+	* Removed unused ds-wordpress-api.php
 
 1.1.0: 2026-09-26
 	* Requires WordPress 6.0+ and PHP 7.4+
@@ -11,7 +14,7 @@ Current Version: 1.1.0
 	* Saving a post regenerates that post's thumbnail. Deleting a post deletes that file. Existing files are kept when a rebuild does not overwrite
 	* Settings → PostsByImage uses the Settings API and manage_options. Cache rebuild prints one summary
 	* The gallery is a CSS grid of linked thumbnails. Each image alt is the post title
-	* Removed unused ds-wordpress-api.php
+	* ds-wordpress-api.php is no longer loaded
 
 0.2: 2007-11-01
 	* Compatible ONLY with Wordpress 2.3 and above
