@@ -1,353 +1,790 @@
 <?php
-/*
-Plugin Name: PostsByImage
+/**
+ * Plugin Name: PostsByImage
+ * Plugin URI: http://www.digitalsublimity.com/products/postsbyimage
+ * Description: Builds a grid of post thumbnails that link back to their posts. Place [postsbyimage=] in a post or page. Optional semicolon-separated category names or term IDs select a subset.
+ * Author: Digital Sublimity
+ * Version: 1.1.0
+ * Requires at least: 6.0
+ * Requires PHP: 7.4
+ * Author URI: http://www.digitalsublimity.com
+ *
+ * @package PostsByImage
+ */
 
-Plugin URI: http://www.digitalsublimity.com/products/postsbyimage
+if ( ! defined( 'ABSPATH' ) ) {
+	exit;
+}
 
-Description: PostsByImage is a plugin that creates a set of thumbnails for all posts containing images. Those thumbnails link to the respective posts from which they come, and they can be placed within a post or on a static page. Thumbnail sets can be created for all posts, or on a per-category basis. An artist, for example, might create a static page called "My Paintings", which would contain thumbnails/links to all posts in her "paintings" category.
+define( 'POSTSBYIMAGE_GENERATETAG_START', '[postsbyimage=' );
+define( 'POSTSBYIMAGE_GENERATETAG_STOP', ']' );
+define( 'POSTSBYIMAGE_ARGSEPARATOR', ';' );
 
-Author: Digital Sublimity
+register_activation_hook( __FILE__, 'ds_pbi_install' );
+add_action( 'admin_menu', 'ds_pbi_addpages' );
+add_action( 'admin_init', 'ds_pbi_register_settings' );
+add_action( 'admin_init', 'ds_pbi_handle_cache_rebuild' );
+add_action( 'delete_post', 'ds_pbi_deleteimageofpost' );
+add_filter( 'the_content', 'ds_pbi_parsecontent' );
+add_action( 'save_post', 'ds_pbi_postsaved' );
 
-Version: 1.0
-
-Author URI: http://www.digitalsublimity.com
-*/
-
-////////////////////////////////////////////////////////////////////////////////
-// Dependences
-////////////////////////////////////////////////////////////////////////////////
-
-// Wordpress Administrative Functions
-require_once ( ABSPATH . '/wp-admin/admin-functions.php' );
-
-////////////////////////////////////////////////////////////////////////////////
-// Global Constant Declarations
-////////////////////////////////////////////////////////////////////////////////
-define ( 'POSTSBYIMAGE_GENERATETAG_START', '[postsbyimage=' ); // Start of PBI tag
-define ( 'POSTSBYIMAGE_GENERATETAG_STOP', ']' ); // End of PBI tag
-define ( 'POSTSBYIMAGE_ARGSEPARATOR', ';' ); // Separator of PBI tag
-
-////////////////////////////////////////////////////////////////////////////////
-// Wordpress Hook Declarations
-////////////////////////////////////////////////////////////////////////////////
-
-// Plugin activation
-register_activation_hook ( __FILE__, 'ds_pbi_install' );
-// Plugin deactivation
-register_deactivation_hook ( __FILE__, 'ds_pbi_uninstall' );
-// Add our page to the administration menu
-add_action ( 'admin_menu', 'ds_pbi_addpages' );
-// When a post is deleted, also delete its associated cached image
-add_action ( 'delete_post', 'ds_pbi_deleteimageofpost' );
-// Before content is displayed, let us look through it and make changes as necessary.
-add_filter ( 'the_content', 'ds_pbi_parsecontent' ) ;
-// When a post is saved, let us look at it so that we can update the cached image if need be.
-add_action ( 'save_post', 'ds_pbi_postsaved' );
-
-////////////////////////////////////////////////////////////////////////////////
-// Plugin Options Definitions
-////////////////////////////////////////////////////////////////////////////////
-
-// Option keys
-global $ds_pbi_options_names;
-$ds_pbi_options_names = array
-	(
-	'ds_pbi_cachepath',
-	'ds_pbi_cacheurl',
-	'ds_pbi_defaultcols',
-	'ds_pbi_thumbnailmaxwidth',
-	'ds_pbi_thumbnailmaxheight'
+/**
+ * Historical defaults. add_option() does not overwrite values already stored.
+ *
+ * @return array<string, string>
+ */
+function ds_pbi_default_options() {
+	return array(
+		'ds_pbi_cachepath'           => '???',
+		'ds_pbi_cacheurl'            => 'http://???',
+		'ds_pbi_defaultcols'         => '2',
+		'ds_pbi_thumbnailmaxwidth'   => '200',
+		'ds_pbi_thumbnailmaxheight'  => '200',
 	);
-global $ds_pbi_options_vals;
-$ds_pbi_options_vals = array
-	(
-	'???',
-	'http://???',
-	'2',
-	'200',
-	'200'
+}
+
+/**
+ * Add options on first activation. Never deletes or resets them later.
+ */
+function ds_pbi_install() {
+	foreach ( ds_pbi_default_options() as $key => $value ) {
+		add_option( $key, $value );
+	}
+}
+
+/**
+ * Settings → PostsByImage.
+ */
+function ds_pbi_addpages() {
+	add_options_page(
+		'PostsByImage',
+		'PostsByImage',
+		'manage_options',
+		'postsbyimage',
+		'ds_pbi_options_page'
+	);
+}
+
+/**
+ * Register the five original option keys with the Settings API.
+ */
+function ds_pbi_register_settings() {
+	$defaults = ds_pbi_default_options();
+
+	$text_keys = array(
+		'ds_pbi_cachepath',
+		'ds_pbi_cacheurl',
+	);
+	foreach ( $text_keys as $key ) {
+		register_setting(
+			'ds_pbi_settings',
+			$key,
+			array(
+				'type'              => 'string',
+				'sanitize_callback' => 'ds_pbi_sanitize_text',
+				'default'           => $defaults[ $key ],
+			)
+		);
+	}
+
+	$number_keys = array(
+		'ds_pbi_defaultcols',
+		'ds_pbi_thumbnailmaxwidth',
+		'ds_pbi_thumbnailmaxheight',
+	);
+	foreach ( $number_keys as $key ) {
+		register_setting(
+			'ds_pbi_settings',
+			$key,
+			array(
+				'type'              => 'string',
+				'sanitize_callback' => 'ds_pbi_sanitize_positive_int',
+				'default'           => $defaults[ $key ],
+			)
+		);
+	}
+
+	add_settings_section(
+		'ds_pbi_main',
+		'Settings',
+		'ds_pbi_settings_section_intro',
+		'postsbyimage'
 	);
 
-////////////////////////////////////////////////////////////////////////////////
-// Functions
-////////////////////////////////////////////////////////////////////////////////
-
-// Define our configuration pages
-function ds_pbi_addpages () {
-	// Add our menu under "options"
-	add_options_page ( 'PostsByImage', 'PostsByImage', 'edit_plugins', __FILE__, 'ds_pbi_options_page');
+	add_settings_field(
+		'ds_pbi_cachepath',
+		'Cache directory',
+		'ds_pbi_field_text',
+		'postsbyimage',
+		'ds_pbi_main',
+		array(
+			'key'         => 'ds_pbi_cachepath',
+			'description' => 'Absolute filesystem directory. Thumbnails are stored as {directory}/{post ID}.jpg.',
+		)
+	);
+	add_settings_field(
+		'ds_pbi_cacheurl',
+		'Cache URL',
+		'ds_pbi_field_text',
+		'postsbyimage',
+		'ds_pbi_main',
+		array(
+			'key'         => 'ds_pbi_cacheurl',
+			'description' => 'Public URL of that same directory. The gallery loads images from {URL}/{post ID}.jpg.',
+		)
+	);
+	add_settings_field(
+		'ds_pbi_defaultcols',
+		'Columns',
+		'ds_pbi_field_number',
+		'postsbyimage',
+		'ds_pbi_main',
+		array(
+			'key'         => 'ds_pbi_defaultcols',
+			'description' => 'Number of columns in the front-end thumbnail grid.',
+		)
+	);
+	add_settings_field(
+		'ds_pbi_thumbnailmaxwidth',
+		'Thumbnail max width',
+		'ds_pbi_field_number',
+		'postsbyimage',
+		'ds_pbi_main',
+		array(
+			'key'         => 'ds_pbi_thumbnailmaxwidth',
+			'description' => 'New thumbnails are fit inside this width. Existing files are not resized unless you overwrite them.',
+		)
+	);
+	add_settings_field(
+		'ds_pbi_thumbnailmaxheight',
+		'Thumbnail max height',
+		'ds_pbi_field_number',
+		'postsbyimage',
+		'ds_pbi_main',
+		array(
+			'key'         => 'ds_pbi_thumbnailmaxheight',
+			'description' => 'New thumbnails are fit inside this height. Existing files are not resized unless you overwrite them.',
+		)
+	);
 }
 
-function ds_pbi_deleteimageofpost ( $id ) {
-	$fname = get_option ( 'ds_pbi_cachepath' ) . '/' . $id . '.' . 'jpg';
-	if ( file_exists ( $fname ) )
-		unlink ( $fname );
+/**
+ * Intro copy for the settings section.
+ */
+function ds_pbi_settings_section_intro() {
+	echo '<p>Place <code>[postsbyimage=]</code> in a post or page to show every published post that already has a thumbnail. Filter with semicolon-separated category names or term IDs, for example <code>[postsbyimage=Available]</code>, <code>[postsbyimage=5]</code>, or <code>[postsbyimage=Available;Sold]</code>.</p>';
 }
 
-function ds_pbi_generateimagelinkshtml ( $ttid = '*' ) {
-	// This is our html "stream" that we're generating:
-	$content = '';
-	// Each element of this array will be an image link:
-	$htmls = ds_pbi_getimagelinks ( $ttid );
-	if ( ! $htmls )
-		return NULL;
-	// Get the number of columns for our table.
-	$cols = get_option ( 'ds_pbi_defaultcols' );
-	// Keep track of which chronological table cell we're on.
-	$thisCell = 0;
-	// Start our HTML table.
-	$content .= '<table width="100%" border="0">';
-	foreach ( $htmls as $html ) {
-		// Begin row if necessary
-		if ( $thisCell % $cols == 0 ) {
-			$content .= '<tr>';
-		}
-		// Create our column
-		$content .= '<td>';
-		$content .= $html;
-		// End our column
-		$content .= '</td>';
-		// End our row if necessary
-		if ( $thisCell % $cols == $cols - 1 ) {
-			$content .= '</tr>';
-		}
-		// Increment our cell counter
-		$thisCell++;
+/**
+ * Text setting field.
+ *
+ * @param array<string, string> $args Field args.
+ */
+function ds_pbi_field_text( $args ) {
+	$key   = $args['key'];
+	$value = get_option( $key, '' );
+	printf(
+		'<input type="text" class="regular-text" id="%1$s" name="%1$s" value="%2$s" />',
+		esc_attr( $key ),
+		esc_attr( is_string( $value ) ? $value : '' )
+	);
+	if ( ! empty( $args['description'] ) ) {
+		printf( '<p class="description">%s</p>', esc_html( $args['description'] ) );
 	}
-	// End table
-	$content .= '</table>';
+}
+
+/**
+ * Positive integer setting field.
+ *
+ * @param array<string, string> $args Field args.
+ */
+function ds_pbi_field_number( $args ) {
+	$key   = $args['key'];
+	$value = get_option( $key, '' );
+	printf(
+		'<input type="number" min="1" step="1" class="small-text" id="%1$s" name="%1$s" value="%2$s" />',
+		esc_attr( $key ),
+		esc_attr( (string) ds_pbi_positive_int( $value, 1 ) )
+	);
+	if ( ! empty( $args['description'] ) ) {
+		printf( '<p class="description">%s</p>', esc_html( $args['description'] ) );
+	}
+}
+
+/**
+ * @param mixed $value Raw option value.
+ * @return string
+ */
+function ds_pbi_sanitize_text( $value ) {
+	if ( ! is_string( $value ) ) {
+		return '';
+	}
+	return trim( wp_strip_all_tags( $value ) );
+}
+
+/**
+ * @param mixed $value Raw option value.
+ * @return string
+ */
+function ds_pbi_sanitize_positive_int( $value ) {
+	return (string) ds_pbi_positive_int( $value, 1 );
+}
+
+/**
+ * @param mixed $value Raw value.
+ * @param int   $fallback Used when the value is not a positive integer.
+ * @return int
+ */
+function ds_pbi_positive_int( $value, $fallback ) {
+	$number = absint( $value );
+	if ( $number < 1 ) {
+		return (int) $fallback;
+	}
+	return $number;
+}
+
+/**
+ * Options screen. Markup lives in postsbyimage-options.php.
+ */
+function ds_pbi_options_page() {
+	if ( ! current_user_can( 'manage_options' ) ) {
+		return;
+	}
+	require_once plugin_dir_path( __FILE__ ) . 'postsbyimage-options.php';
+	ds_pbi_render_options_page();
+}
+
+/**
+ * Rebuild missing thumbnails. Overwrite is optional and off by default.
+ */
+function ds_pbi_handle_cache_rebuild() {
+	if ( empty( $_POST['ds_pbi_rebuild_cache'] ) ) {
+		return;
+	}
+	if ( ! current_user_can( 'manage_options' ) ) {
+		return;
+	}
+	check_admin_referer( 'ds_pbi_rebuild_cache' );
+
+	$overwrite = ! empty( $_POST['ds_pbi_overwrite'] );
+	$summary   = ds_pbi_regenerateimagecache( $overwrite );
+	set_transient( 'ds_pbi_rebuild_summary_' . get_current_user_id(), $summary, MINUTE_IN_SECONDS );
+
+	wp_safe_redirect( admin_url( 'options-general.php?page=postsbyimage' ) );
+	exit;
+}
+
+/**
+ * Delete {cachepath}/{post_id}.jpg when the post is deleted.
+ *
+ * @param int $post_id Post ID.
+ */
+function ds_pbi_deleteimageofpost( $post_id ) {
+	$path = ds_pbi_thumbnail_path( $post_id );
+	if ( '' !== $path && is_file( $path ) ) {
+		unlink( $path );
+	}
+}
+
+/**
+ * Replace PostsByImage tags in post content. This stays a the_content string replace.
+ *
+ * @param string $content Post content.
+ * @return string
+ */
+function ds_pbi_parsecontent( $content ) {
+	if ( ! is_string( $content ) || '' === $content ) {
+		return $content;
+	}
+
+	$start  = POSTSBYIMAGE_GENERATETAG_START;
+	$stop   = POSTSBYIMAGE_GENERATETAG_STOP;
+	$offset = 0;
+
+	while ( false !== ( $tag_startpos = strpos( $content, $start, $offset ) ) ) {
+		$tag_endpos = strpos( $content, $stop, $tag_startpos + strlen( $start ) );
+		if ( false === $tag_endpos ) {
+			break;
+		}
+
+		$inner = substr(
+			$content,
+			$tag_startpos + strlen( $start ),
+			$tag_endpos - ( $tag_startpos + strlen( $start ) )
+		);
+		$replacement = ds_pbi_render_tag( $inner );
+		$content     = substr( $content, 0, $tag_startpos ) . $replacement . substr( $content, $tag_endpos + strlen( $stop ) );
+		$offset      = $tag_startpos + strlen( $replacement );
+	}
+
 	return $content;
 }
 
-// Generate any images that don't exist
-function ds_pbi_generateimages ( $category = '*', $overwrite = true ) {
-	global $wpdb;
-	$ids = ds_pbi_GetObjectIDsByTermTaxonomyID ( $category );
-	if ( ! $ids )
-		return NULL;
-	foreach ( $ids as $id ) {
-		// For each object, regenerate the object's image.
-		ds_pbi_regeneratepostimage ( $id );
-	}
-}
-
-function ds_pbi_getimagelinks ( $ttid = '*' ) {
-	$ids = ds_pbi_GetObjectIDsByTermTaxonomyID ( $ttid );
-	$htmls = array ();
-	if ( ! $ids )
-		return NULL;
-	foreach ( $ids as $id ) {
-		// jpg only, for now
-		$filename = get_option ( 'ds_pbi_cachepath' ) . '/' . $id . '.jpg';
-		if ( file_exists ( $filename ) ) {
-			$thisOne = '<a href="' . get_permalink ( $id ) . '"><img src="' . get_option ( 'ds_pbi_cacheurl' ) . '/' . $id . '.jpg' . '"></img></a>';
-			$htmls [] = $thisOne;
-		}
-	}
-	return $htmls;
-}
-
-function ds_pbi_install () {
-	// Add our options with their default values as defined.
-	global $ds_pbi_options_names;
-	global $ds_pbi_options_vals;
-	$num_opts = count($ds_pbi_options_names);
-	for ($i = 0; $i < $num_opts; $i++) {
-		add_option($ds_pbi_options_names[$i], $ds_pbi_options_vals[$i]);
-	}
-}
-
-// Define our options page
-function ds_pbi_options_page () {
-	include  ( 'postsbyimage-options.php' );
-}
-
-// Break into: pre-tag, tag, post-tag
-function ds_pbi_parsecontent ( $content ) {
-	// Find start of tag
-	while ( $tag_startpos = strpos ( $content, POSTSBYIMAGE_GENERATETAG_START ) ) {
-		// If no tag, return original content.
-		if ( ! $tag_startpos )
-			return $content;
-		// Find end of tag
-		$tag_endpos = strpos ( $content, POSTSBYIMAGE_GENERATETAG_STOP, $tag_startpos );
-		// Tag = start of tag through end of tag
-		$content_tag = substr ( $content, $tag_startpos, $tag_endpos - $tag_startpos + 1);
-		// Pre = all content before tag
-		$content_pre = substr ( $content, 0, $tag_startpos );
-		// Post = all content after tag
-		$content_post = substr ( $content, $tag_endpos + 1 );
-		
-		$newcontent_tag = '';
-		$data = substr ( $content_tag, strlen ( POSTSBYIMAGE_GENERATETAG_START), strlen ( $content_tag ) - strlen ( POSTSBYIMAGE_GENERATETAG_START ) - strlen ( POSTSBYIMAGE_GENERATETAG_STOP ) );
-		$args = explode ( POSTSBYIMAGE_ARGSEPARATOR, $data );
-		// If no category is specified, use default (all categories).
-		if ( count ( $args ) == 0 || ( count ( $args ) == 1 && $args [ 0 ] == '' ) ) { // no category given
-			$newcontent_tag = ds_pbi_generateimagelinkshtml ();
-		}
-		else { // generate for each category
-			foreach ( $args as $arg ) {
-				// If argument is a string, ...
-				if ( ! is_numeric ($arg) ) {
-					// Then assume it is the name of a category.
-					// Convert from string to ID.
-					$arg = ds_pbi_GetTermID ( $arg );
-				}
-				// Look up the category name and use the ID instead.
-				$newcontent_tag .= ds_pbi_generateimagelinkshtml ( $arg );
+/**
+ * Render one tag body (the text between [postsbyimage= and ]).
+ *
+ * An empty body means every published post. Otherwise each semicolon-separated
+ * piece is a category name, slug, or term_id.
+ *
+ * @param string $data Tag argument string.
+ * @return string
+ */
+function ds_pbi_render_tag( $data ) {
+	$args = array_map( 'trim', explode( POSTSBYIMAGE_ARGSEPARATOR, (string) $data ) );
+	$args = array_values(
+		array_filter(
+			$args,
+			static function ( $arg ) {
+				return '' !== $arg;
 			}
-		}
-		// Return pre-tag, processed tag, post-tag
-		$content = $content_pre . $newcontent_tag . $content_post;
+		)
+	);
+
+	if ( empty( $args ) ) {
+		return ds_pbi_generateimagelinkshtml( 0 );
 	}
-	return $content;
+
+	$html = '';
+	foreach ( $args as $arg ) {
+		$term_id = ds_pbi_resolve_category( $arg );
+		if ( $term_id < 1 ) {
+			continue;
+		}
+		$html .= ds_pbi_generateimagelinkshtml( $term_id );
+	}
+	return $html;
 }
 
-// Called when a post is saved (created or edited)
-function ds_pbi_postsaved ( $id ) {
-	// Regenerate the post's thumbnail.
-	ds_pbi_regeneratepostimage ( $id );
+/**
+ * Resolve a category name, slug, or term_id. Returns 0 when it does not match a category.
+ *
+ * Numeric values are term_id values looked up with get_term(). They are not used as term_taxonomy_id.
+ *
+ * @param string $arg Tag argument.
+ * @return int
+ */
+function ds_pbi_resolve_category( $arg ) {
+	$arg = trim( (string) $arg );
+	if ( '' === $arg ) {
+		return 0;
+	}
+
+	if ( ctype_digit( $arg ) ) {
+		$term = get_term( (int) $arg, 'category' );
+		if ( $term && ! is_wp_error( $term ) ) {
+			return (int) $term->term_id;
+		}
+		return 0;
+	}
+
+	$term = get_term_by( 'name', $arg, 'category' );
+	if ( ! $term ) {
+		$term = get_term_by( 'slug', sanitize_title( $arg ), 'category' );
+	}
+	if ( $term && ! is_wp_error( $term ) ) {
+		return (int) $term->term_id;
+	}
+	return 0;
 }
 
-function ds_pbi_regenerateimagecache () {
-	// Warn user that image generation may require a lot of time.
-	echo 'About to regenerate your image cache... this could take a while!<br />';
-	// Get all posts.
-	$ids = ds_pbi_GetObjectIDsByTermTaxonomyID ();
-	// Report to user the number of posts we need to examine.
-	echo 'Looks like you have ' . count ( $ids ) . ' posts that need to be examined!<br />';
-	$done = 1;
-	// For every post we look at...
-	echo 'Looking at post ';
+/**
+ * Published post IDs, optionally limited to one category term_id.
+ *
+ * @param int $term_id Category term_id, or 0 for every published post.
+ * @return int[]
+ */
+function ds_pbi_get_published_post_ids( $term_id = 0 ) {
+	$args = array(
+		'post_type'              => 'post',
+		'post_status'            => 'publish',
+		'posts_per_page'         => -1,
+		'fields'                 => 'ids',
+		'orderby'                => 'date',
+		'order'                  => 'DESC',
+		'no_found_rows'          => true,
+		'ignore_sticky_posts'    => true,
+		'update_post_meta_cache' => false,
+		'update_post_term_cache' => false,
+	);
+
+	$term_id = (int) $term_id;
+	if ( $term_id > 0 ) {
+		$args['tax_query'] = array(
+			array(
+				'taxonomy'         => 'category',
+				'field'            => 'term_id',
+				'terms'            => array( $term_id ),
+				'include_children' => false,
+			),
+		);
+	}
+
+	$ids = get_posts( $args );
+	if ( ! is_array( $ids ) ) {
+		return array();
+	}
+	return array_map( 'intval', $ids );
+}
+
+/**
+ * Linked thumbnail grid for a category, or for every published post when $term_id is 0.
+ *
+ * @param int|string $term_id Category term_id, or 0 / '*' for all published posts.
+ * @return string
+ */
+function ds_pbi_generateimagelinkshtml( $term_id = 0 ) {
+	if ( '*' === $term_id || '' === $term_id || null === $term_id ) {
+		$term_id = 0;
+	}
+
+	$ids = ds_pbi_get_published_post_ids( (int) $term_id );
+	if ( empty( $ids ) ) {
+		return '';
+	}
+
+	$cols = ds_pbi_positive_int( get_option( 'ds_pbi_defaultcols', 2 ), 2 );
+	$items = array();
+
 	foreach ( $ids as $id ) {
-		// ... tell the user we're looking at it.
-		echo $done;
-		echo '... ';
-		// Simulate a post edit by directly calling our postsaved () handler. This handler will automatically regenerate the image for that post.
-		ds_pbi_postsaved ( $id );
-		// Increment the counter for number of posts we've edited.
-		$done++;
+		$path = ds_pbi_thumbnail_path( $id );
+		if ( '' === $path || ! is_file( $path ) ) {
+			continue;
+		}
+		$url = ds_pbi_thumbnail_url( $id );
+		if ( '' === $url ) {
+			continue;
+		}
+		$items[] = sprintf(
+			'<a class="ds-pbi-link" href="%1$s"><img class="ds-pbi-thumb" src="%2$s" alt="%3$s" style="max-width:100%%;height:auto;" /></a>',
+			esc_url( get_permalink( $id ) ),
+			esc_url( $url ),
+			esc_attr( get_the_title( $id ) )
+		);
 	}
-	// Report success to the user.
-	echo '<br /> Success: Cache updated!<br />';
+
+	if ( empty( $items ) ) {
+		return '';
+	}
+
+	return '<div class="ds-pbi-grid" style="display:grid;grid-template-columns:repeat(' . $cols . ',minmax(0,1fr));gap:1em;">' . implode( '', $items ) . '</div>';
 }
 
-// Regenerate the image of a single post.
-function ds_pbi_regeneratepostimage ( $id ) {
-	// Delete old image affiliated with post.
-	ds_pbi_deleteimageofpost ( $id );
-	// Get first image from object, if existent.
-	$image_path = ds_pbi_GetURLOfFirstImageInObject ( $id );
-	// If an image was found, ...
-	if ( $image_path ) {
-		// Get the name of the existing file.
-		$filename_existing = ABSPATH . substr ( $image_path, strlen ( get_option ( 'siteurl' ) ) + 1, strlen ( $image_path ) - strlen ( get_option ( 'siteurl' ) ) - 1 );
-		if ( is_readable ( $filename_existing ) ) {
-			$info = pathinfo ( $filename_existing );
-			$filename_new = get_option ( 'ds_pbi_cachepath' ) . '/' . $id . '.jpg'; // $info [ 'extension' ];
-			$image_attr = getimagesize( $filename_existing );
-			$image_width = $image_attr[0];
-			$image_height = $image_attr[1];
-			$maxside = get_option ( 'ds_pbi_thumbnailmaxwidth' );
-			if ( $image_height > $image_width ) {
-				$maxside = get_option ( 'ds_pbi_thumbnailmaxheight' );
-			}
-			if ( ! file_exists ( $filename_new ) ) {
-				$thumb = wp_create_thumbnail ( $filename_existing, $maxside );
-				if ( file_exists ( $thumb ) ) {
-					rename ( $thumb, $filename_new );
-				}
-				else {
-					// thumbnail creation failed!
-					// Assume it's hosted off-site.
-					echo 'Image hosted off-site!';
-				}
-			}
+/**
+ * Rebuild thumbnails for published posts.
+ *
+ * Existing {id}.jpg files are left untouched when $overwrite is false, including when the source image is unchanged.
+ *
+ * @param bool $overwrite Replace thumbnails that already exist.
+ * @return string Short summary for the settings screen.
+ */
+function ds_pbi_regenerateimagecache( $overwrite = false ) {
+	$ids    = ds_pbi_get_published_post_ids( 0 );
+	$counts = array(
+		'wrote'     => 0,
+		'unchanged' => 0,
+		'skipped'   => 0,
+		'failed'    => 0,
+	);
+
+	foreach ( $ids as $id ) {
+		$result = ds_pbi_regeneratepostimage( $id, (bool) $overwrite );
+		if ( isset( $counts[ $result ] ) ) {
+			$counts[ $result ]++;
 		}
 	}
+
+	return sprintf(
+		'Examined %1$d published posts. Wrote %2$d thumbnails, left %3$d unchanged, skipped %4$d with no local image, failed %5$d.',
+		count( $ids ),
+		$counts['wrote'],
+		$counts['unchanged'],
+		$counts['skipped'],
+		$counts['failed']
+	);
 }
 
-function ds_pbi_uninstall () {
-	// Remove options from database on uninstall.
-	//global $ds_pbi_options_names;
-	//$num_opts = count($ds_pbi_options_names);
-	//for ($i = 0; $i < $num_opts; $i++) {
-	//	delete_option($ds_pbi_options_names[$i], $ds_pbi_options_vals[$i]);
-	//}
-}
-
-/*	Func: GetObjectIDsByTermTaxonomyID
-	Desc: Returns all published objects (posts or pages) that match a specific term taxonomy (category or tag).
-	Params:
-		1. $ttid (int) [IN]
-			the term taxonomy id to match.
-	Returns:
-		array of integers whose values are the IDs of the objects that match.
-*/
-function ds_pbi_GetObjectIDsByTermTaxonomyID ( $ttid = '*' ) {
-	// Wordpress database interface class
-	global $wpdb;
-	$sql = 'SELECT DISTINCT TR.object_id'
-		. ' FROM ' . $wpdb -> term_relationships . ' TR, ' . $wpdb -> posts . ' P'
-		. ' WHERE TR.object_id=P.ID AND P.post_status="publish"';
-	if ( $ttid != '*' )
-		$sql .= ' AND term_taxonomy_id=' . $ttid;
-	// Get the results from our query.
-	$sql_results = $wpdb -> get_results ( $sql, ARRAY_A );
-	// Put our results into an array.
-	$return_ids = array ();
-	if ( ! $sql_results ) {
-		$return_ids = NULL;
+/**
+ * Regenerate one post thumbnail when that post is saved.
+ *
+ * @param int $post_id Post ID.
+ */
+function ds_pbi_postsaved( $post_id ) {
+	$post_id = (int) $post_id;
+	if ( $post_id <= 0 ) {
+		return;
 	}
-	else {
-		foreach ( $sql_results as $this_sql_result )
-			$return_ids [] = $this_sql_result [ 'object_id' ];
+	if ( wp_is_post_revision( $post_id ) || wp_is_post_autosave( $post_id ) ) {
+		return;
 	}
-	// Return the array that we generated.
-	return $return_ids;
+	if ( defined( 'DOING_AUTOSAVE' ) && DOING_AUTOSAVE ) {
+		return;
+	}
+
+	$post = get_post( $post_id );
+	if ( ! is_object( $post ) || ! isset( $post->post_type ) || 'post' !== $post->post_type ) {
+		return;
+	}
+	if ( isset( $post->post_status ) && 'auto-draft' === $post->post_status ) {
+		return;
+	}
+
+	ds_pbi_regeneratepostimage( $post_id, true );
 }
 
-/*	Func: ds_pbi_GetTermID
-	Desc: Returns the ID of a term (category) based on its name.
-	Params:
-		1. $term_name (string) [IN]
-			the name of the term whose ID we need
-	Returns:
-		integer ID of term
-*/
-function ds_pbi_GetTermID ( $term_name ) {
-	// Wordpress database interface class
-	global $wpdb;
-	// Get the id based on the term name.
-	// SQL string compares are not case-sensitive.
-	$sql .= 'SELECT term_id'
-		. ' FROM ' . $wpdb -> terms
-		. ' WHERE name="' . $term_name . '"';
-	$content = $wpdb -> get_var ( $sql );
-	// TODO: Make sure we got valid results; else return -1, perhaps.
-	return $content;
+/**
+ * Write {cachepath}/{id}.jpg for one post.
+ *
+ * When the file already exists and $overwrite is false, it is not read or rewritten.
+ *
+ * @param int  $post_id Post ID.
+ * @param bool $overwrite Replace an existing thumbnail.
+ * @return string wrote|unchanged|skipped|failed
+ */
+function ds_pbi_regeneratepostimage( $post_id, $overwrite = true ) {
+	$post_id = (int) $post_id;
+	$dest    = ds_pbi_thumbnail_path( $post_id );
+	if ( '' === $dest ) {
+		return 'failed';
+	}
+
+	$exists = is_file( $dest );
+	if ( $exists && ! $overwrite ) {
+		return 'unchanged';
+	}
+
+	$source = ds_pbi_source_image_path( $post_id );
+	if ( '' === $source || ! is_readable( $source ) ) {
+		// Leave an existing jpeg in place. delete_post is what removes it.
+		return 'skipped';
+	}
+
+	$dir = dirname( $dest );
+	if ( ! is_dir( $dir ) || ! is_writable( $dir ) ) {
+		return 'failed';
+	}
+	if ( ! function_exists( 'wp_get_image_editor' ) ) {
+		return 'failed';
+	}
+
+	$editor = wp_get_image_editor( $source );
+	if ( is_wp_error( $editor ) ) {
+		return 'failed';
+	}
+
+	$max_width  = ds_pbi_positive_int( get_option( 'ds_pbi_thumbnailmaxwidth', 200 ), 200 );
+	$max_height = ds_pbi_positive_int( get_option( 'ds_pbi_thumbnailmaxheight', 200 ), 200 );
+	$resized    = $editor->resize( $max_width, $max_height, false );
+	if ( is_wp_error( $resized ) && 'error_getting_dimensions' !== $resized->get_error_code() ) {
+		return 'failed';
+	}
+
+	$tmp   = $dir . '/' . $post_id . '.new.jpg';
+	$saved = $editor->save( $tmp, 'image/jpeg' );
+	if ( is_wp_error( $saved ) || ! is_array( $saved ) || empty( $saved['path'] ) || ! is_file( $saved['path'] ) ) {
+		if ( is_file( $tmp ) ) {
+			unlink( $tmp );
+		}
+		return 'failed';
+	}
+
+	$written = $saved['path'];
+	if ( $written !== $dest && ! rename( $written, $dest ) ) {
+		if ( is_file( $written ) ) {
+			unlink( $written );
+		}
+		return 'failed';
+	}
+
+	return 'wrote';
 }
 
-function ds_pbi_GetURLOfFirstImageInObject ( $objectid ) {
-	// Wordpress database interface class
-	global $wpdb;
-	// Grab content from the database where it looks like we have an image
-	$sql = 'SELECT post_content'
-		. ' FROM ' . $wpdb -> posts
-		. ' WHERE ID=' . $objectid . ' AND post_content LIKE "%<img%src%"';
-	$content = $wpdb -> get_var ( $sql );
-	// Define more explicitly what an image pattern is.
-	$pattern = '/<img.*src\s*=\s*"([^"]*)"/iU';
-	// If we have a match, ...
-	if ( preg_match ( $pattern, $content, $matches ) ) {
-		// ... return it!
-		return $matches [ 1 ];
+/**
+ * Local source image for a post.
+ *
+ * Featured image first (thumbnail size, then large, then the original file).
+ * Otherwise the first <img> in post_content. Off-site images are skipped.
+ *
+ * @param int $post_id Post ID.
+ * @return string Filesystem path, or '' when there is nothing local to thumbnail.
+ */
+function ds_pbi_source_image_path( $post_id ) {
+	$featured = ds_pbi_featured_image_path( $post_id );
+	if ( '' !== $featured ) {
+		return $featured;
 	}
-	// If we don't have a match, ...
-	else {
-		// ... return null.
-		return NULL;
+
+	$post = get_post( $post_id );
+	if ( ! is_object( $post ) ) {
+		return '';
 	}
+	return ds_pbi_content_image_path( $post );
 }
 
-?>
+/**
+ * @param int $post_id Post ID.
+ * @return string
+ */
+function ds_pbi_featured_image_path( $post_id ) {
+	$attachment_id = (int) get_post_thumbnail_id( $post_id );
+	if ( $attachment_id <= 0 ) {
+		return '';
+	}
+	return ds_pbi_local_attachment_path( $attachment_id, array( 'thumbnail', 'large', 'full' ) );
+}
+
+/**
+ * Resolve a local file for an attachment size, then the original file.
+ *
+ * @param int      $attachment_id Attachment ID.
+ * @param string[] $sizes Size names. "full" means the attached original file.
+ * @return string
+ */
+function ds_pbi_local_attachment_path( $attachment_id, $sizes ) {
+	$attachment_id = (int) $attachment_id;
+	if ( $attachment_id <= 0 ) {
+		return '';
+	}
+
+	$original = get_attached_file( $attachment_id );
+	$original = is_string( $original ) ? $original : '';
+	$meta     = wp_get_attachment_metadata( $attachment_id );
+	$dir      = '' !== $original ? dirname( $original ) : '';
+
+	foreach ( $sizes as $size ) {
+		if ( 'full' === $size ) {
+			if ( '' !== $original && is_readable( $original ) ) {
+				return $original;
+			}
+			continue;
+		}
+		if ( '' === $dir || ! is_array( $meta ) || empty( $meta['sizes'][ $size ]['file'] ) || ! is_string( $meta['sizes'][ $size ]['file'] ) ) {
+			continue;
+		}
+		$candidate = $dir . '/' . $meta['sizes'][ $size ]['file'];
+		if ( is_readable( $candidate ) ) {
+			return $candidate;
+		}
+	}
+
+	return '';
+}
+
+/**
+ * First content image: attachment ID from class wp-image-N, otherwise a file under wp-content/uploads.
+ *
+ * @param object $post Post object.
+ * @return string
+ */
+function ds_pbi_content_image_path( $post ) {
+	$content = isset( $post->post_content ) ? $post->post_content : '';
+	if ( ! is_string( $content ) || '' === $content ) {
+		return '';
+	}
+	if ( ! preg_match( '/<img\b[^>]*>/i', $content, $tag_match ) ) {
+		return '';
+	}
+
+	$tag           = $tag_match[0];
+	$attachment_id = 0;
+	if ( preg_match( '/\bwp-image-(\d+)\b/', $tag, $id_match ) ) {
+		$attachment_id = (int) $id_match[1];
+	}
+	if ( $attachment_id > 0 ) {
+		$path = ds_pbi_local_attachment_path( $attachment_id, array( 'full' ) );
+		if ( '' !== $path ) {
+			return $path;
+		}
+	}
+
+	$src = '';
+	if ( preg_match( '/\ssrc\s*=\s*(["\'])([^"\']+)\1/i', $tag, $src_match ) ) {
+		$src = $src_match[2];
+	} elseif ( preg_match( '/\ssrc\s*=\s*([^\s>]+)/i', $tag, $src_match ) ) {
+		$src = trim( $src_match[1], "\"'" );
+	}
+
+	return ds_pbi_resolve_uploads_path( $src );
+}
+
+/**
+ * Map an uploads URL (any scheme or host) to a readable file under the uploads directory.
+ *
+ * @param string $url Image URL or root-relative path.
+ * @return string
+ */
+function ds_pbi_resolve_uploads_path( $url ) {
+	if ( ! is_string( $url ) || '' === $url ) {
+		return '';
+	}
+
+	$url = html_entity_decode( $url, ENT_QUOTES, 'UTF-8' );
+	if ( ! function_exists( 'wp_get_upload_dir' ) ) {
+		return '';
+	}
+
+	$uploads = wp_get_upload_dir();
+	if ( ! empty( $uploads['error'] ) || empty( $uploads['basedir'] ) ) {
+		return '';
+	}
+
+	$url_path = wp_parse_url( $url, PHP_URL_PATH );
+	if ( ! is_string( $url_path ) || '' === $url_path ) {
+		return '';
+	}
+
+	$bases = array();
+	$upload_base = wp_parse_url( $uploads['baseurl'], PHP_URL_PATH );
+	if ( is_string( $upload_base ) && '' !== $upload_base ) {
+		$bases[ untrailingslashit( $upload_base ) ] = $uploads['basedir'];
+	}
+	$content_uploads = wp_parse_url( content_url( 'uploads' ), PHP_URL_PATH );
+	if ( is_string( $content_uploads ) && '' !== $content_uploads ) {
+		$bases[ untrailingslashit( $content_uploads ) ] = WP_CONTENT_DIR . '/uploads';
+	}
+
+	foreach ( $bases as $base_path => $base_dir ) {
+		$prefix = trailingslashit( $base_path );
+		if ( 0 !== strpos( $url_path, $prefix ) && $url_path !== $base_path ) {
+			continue;
+		}
+		$relative = ltrim( substr( $url_path, strlen( $base_path ) ), '/' );
+		$file     = rtrim( $base_dir, '/\\' ) . '/' . $relative;
+		if ( is_readable( $file ) ) {
+			return $file;
+		}
+	}
+
+	return '';
+}
+
+/**
+ * @param int $post_id Post ID.
+ * @return string
+ */
+function ds_pbi_thumbnail_path( $post_id ) {
+	$dir = get_option( 'ds_pbi_cachepath', '' );
+	if ( ! is_string( $dir ) ) {
+		return '';
+	}
+	$dir = rtrim( $dir, "/\\" );
+	if ( '' === $dir ) {
+		return '';
+	}
+	return $dir . '/' . (int) $post_id . '.jpg';
+}
+
+/**
+ * @param int $post_id Post ID.
+ * @return string
+ */
+function ds_pbi_thumbnail_url( $post_id ) {
+	$base = get_option( 'ds_pbi_cacheurl', '' );
+	if ( ! is_string( $base ) ) {
+		return '';
+	}
+	$base = rtrim( $base, '/' );
+	if ( '' === $base ) {
+		return '';
+	}
+	return $base . '/' . (int) $post_id . '.jpg';
+}

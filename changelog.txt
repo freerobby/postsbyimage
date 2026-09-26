@@ -1,6 +1,17 @@
 PostsByImage Change Log
 
-Current Version: 0.2
+Current Version: 1.1.0
+
+1.1.0: 2026-09-26
+	* Requires WordPress 6.0+ and PHP 7.4+
+	* Thumbnail files, option keys, and the [postsbyimage=] content tag are unchanged
+	* Published posts are queried with get_posts. Categories resolve through get_term / get_term_by (name, slug, or term_id)
+	* The first image is the featured image (thumbnail, then large, then the original file), otherwise the first image in the post
+	* Thumbnails are fit inside the configured box with wp_get_image_editor and saved as {cachepath}/{post ID}.jpg
+	* Saving a post regenerates that post's thumbnail. Deleting a post deletes that file. Existing files are kept when a rebuild does not overwrite
+	* Settings → PostsByImage uses the Settings API and manage_options. Cache rebuild prints one summary
+	* The gallery is a CSS grid of linked thumbnails. Each image alt is the post title
+	* ds-wordpress-api.php is no longer loaded
 
 0.2: 2007-11-01
 	* Compatible ONLY with Wordpress 2.3 and above
