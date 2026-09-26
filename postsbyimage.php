@@ -4,7 +4,7 @@
  * Plugin URI: http://www.digitalsublimity.com/products/postsbyimage
  * Description: Builds a grid of post thumbnails that link back to their posts. Place [postsbyimage=] in a post or page. Optional semicolon-separated category names or term IDs select a subset.
  * Author: Digital Sublimity
- * Version: 1.1.0
+ * Version: 1.1.1
  * Requires at least: 6.0
  * Requires PHP: 7.4
  * Author URI: http://www.digitalsublimity.com
